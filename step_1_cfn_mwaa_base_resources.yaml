@@ -1,0 +1,583 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: CFN Template for generating MWAA Environment and depending ressources
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: ( 1 ) ___Base Configuration________________________________________
+        Parameters:
+          - VPCID
+          - BucketName
+          - KMSKeyID
+      - Label:
+          default: ( 2 ) IAM Configuration________________________________________
+        Parameters:
+          - AirflowRoleName
+          - AirflowUserRoleName
+          - MWAAGroupName
+      - Label:
+          default: ( 3 ) airflow Configuration________________________________________
+        Parameters:
+          - MWAAName
+      - Label:
+          default: ( 4 ) Dag Deployment Configuration________________________________________
+        Parameters:
+          - LambdaName
+          - CodePipelineName
+          - RepositoryName
+          - BranchName
+
+
+# Parameters
+Parameters:
+  VPCID:
+    Type: 'AWS::EC2::VPC::Id'
+  AirflowRoleName:
+    Type: String
+    Description: The name of the role used for MWAA.
+  AirflowUserRoleName:
+    Type: String
+    Description: The name of the role for the MWAA users.
+  BucketName:
+    Type: String
+    Description: The name of the airflow bucket. Needs to start with 'airflow-'.
+  KMSKeyID:
+    Type: String
+    Description: The key ARN for the KMS master key
+  MWAAGroupName:
+    Type: String
+    Description: The name for the IAM group
+  LambdaName:
+    Type: String
+    Description: The name for the Lambda function that zips the files loaded in S3
+  CodePipelineName:
+    Type: String
+    Description: The name for the Airflow CodePipeline
+  RepositoryName:
+    Type: String
+    Description: The name of the CodeCommit repository
+  BranchName:
+    Type: String
+    Description: The branch containing the MWAA files
+  MWAAName:
+    Type: String
+    Description: Name of the MWAA environment
+
+
+# Resources
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !Ref KMSKeyID
+              SSEAlgorithm: aws:kms
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: TRUE
+        BlockPublicPolicy: FALSE
+        IgnorePublicAcls: TRUE
+        RestrictPublicBuckets: FALSE
+      VersioningConfiguration:
+        Status: Enabled
+  MWAARole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - airflow-env.amazonaws.com
+              - airflow.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Description: Role for MWAA
+      Path: /service-role/
+      Policies:
+        - PolicyName: mwaa-access-role
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: airflow:PublishMetrics
+                Resource: !Sub arn:aws:airflow:${AWS::Region}:${AWS::AccountId}:environment/*
+              - Effect: Deny
+                Action: s3:ListAllMyBuckets
+                Resource:
+                  - !Sub arn:aws:s3:::${BucketName}
+                  - !Sub arn:aws:s3:::${BucketName}/*
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:CreateLogGroup
+                  - logs:PutLogEvents
+                  - logs:GetLogEvents
+                  - logs:GetLogRecord
+                  - logs:GetLogGroupFields
+                  - logs:GetQueryResults
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:airflow-*
+              - Effect: Allow
+                Action:
+                  - logs:Describe*
+                  - logs:Get*
+                  - logs:List*
+                  - logs:StartQuery
+                  - logs:StopQuery
+                  - logs:TestMetricFilter
+                  - logs:FilterLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action: logs:DescribeLogGroups
+                Resource: "*"
+              - Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sqs:ChangeMessageVisibility
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:GetQueueUrl
+                  - sqs:ReceiveMessage
+                  - sqs:SendMessage
+                Resource: arn:aws:sqs:eu-central-1:*:airflow-celery-*
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey*
+                  - kms:Encrypt
+                Resource: "*"
+                # Resource: !Ref KMSKeyID
+                # Condition:
+                #   StringLike:
+                #     kms:ViaService:
+                #       - !Sub sqs.${AWS::Region}.amazonaws.com
+                #       - !Sub s3.${AWS::Region}.amazonaws.com
+              - Effect: Allow
+                Action: cloudformation:*
+                Resource: "*"
+              - Effect: Allow
+                Action: lambda:*
+                Resource: "*"
+              - Effect: Allow
+                Action: glue:*
+                Resource: "*"
+              - Effect: Allow
+                Action: sns:*
+                Resource: "*"
+              - Effect: Allow
+                Action: sqs:*
+                Resource: "*"
+              - Effect: Allow
+                Action: ec2:*
+                Resource: "*"
+              - Effect: Allow
+                Action: ssm:*
+                Resource: "*"
+              - Effect: Allow
+                Action: route53:TestDNSAnswer
+                Resource: arn:aws:route53:::hostedzone/Z1OTJ9AI2WAF8G
+      RoleName: !Ref AirflowRoleName
+  MWAAGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Ref MWAAGroupName
+  MWAAUserPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      Groups:
+        - !Ref MWAAGroup
+      PolicyName: !Ref AirflowUserRoleName
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: airflow:*
+            Resource: "*"
+          - Effect: Allow
+            Action: iam:CreateServiceLinkedRole
+            Resource: arn:aws:iam::*:role/aws-service-role/airflow.amazonaws.com/AWSServiceRoleForAmazonMWAA
+          - Effect: Allow
+            Action:
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeSubnets
+              - ec2:DescribeVpcs
+            Resource: "*"
+          - Effect: Allow
+            Action: ec2:CreateNetworkInterface
+            Resource:
+              - arn:aws:ec2:*:*:subnet/*
+              - arn:aws:ec2:*:*:network-interface/*
+          - Effect: Allow
+            Action: ec2:CreateVpcEndpoint
+            Resource:
+              - arn:aws:ec2:*:*:vpc-endpoint/*
+              - arn:aws:ec2:*:*:vpc/*
+              - arn:aws:ec2:*:*:subnet/*
+              - arn:aws:ec2:*:*:security-group/*
+          - Effect: Allow
+            Action: s3:GetEncryptionConfiguration
+            Resource: arn:aws:s3:::airflow-*
+          - Effect: Allow
+            Action: iam:PassRole
+            Resource: "*"
+            Condition:
+              StringLike:
+                iam:PassedToService:
+                  - airflow.amazonaws.com
+
+  # Resources for Lambda
+  LambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Description: Role for MWAA Lambda Plugins Zipper
+      Path: /service-role/
+      Policies:
+        - PolicyName: cfn-lambda-mwaa-role
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey*
+                  - kms:Encrypt
+                Resource: "*"
+              - Effect: Allow
+                Action: airflow:UpdateEnvironment
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - codepipeline:PutJobFailureResult
+                  - codepipeline:PutJobSuccessResult
+                Resource: "*"
+
+  LambdaZipFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Lambda function for zipping files
+      FunctionName: !Ref LambdaName
+      Handler: index.lambda_handler
+      Role: !GetAtt  LambdaRole.Arn
+      Runtime: python3.8
+      Timeout: 60
+      Code:
+        ZipFile: !Sub |
+          import os, tempfile, zipfile
+          import boto3
+          mwaa = boto3.client('mwaa')
+          cpl = boto3.client('codepipeline')
+
+          def downloadDirectoryFroms3(bucketName, remoteDirectoryName):
+              s3_resource = boto3.resource('s3')
+              bucket = s3_resource.Bucket(bucketName)
+              for obj in bucket.objects.filter(Prefix = remoteDirectoryName):
+                  if not os.path.exists(os.path.dirname(obj.key)):
+                      os.makedirs(os.path.dirname(obj.key))
+                  bucket.download_file(obj.key, obj.key) # save to same path
+
+          def zipdir(path, ziph):
+              # ziph is zipfile handle
+              for root, dirs, files in os.walk(path):
+                  for file in files:
+                      if file != "plugins.zip":
+                          #print(os.path.relpath(os.path.join(root, file)))
+                          #print(file)
+                          #ziph.write(os.path.join(root, file), os.path.relpath(os.path.join(root, file), os.path.join(path, '..')))
+                          ziph.write(os.path.join(root, file), os.path.relpath(os.path.join(root, file)))
+
+          def lambda_handler(event, context):
+              #update mwaa environment
+              jobid = event["CodePipeline.job"]["id"]
+              print(jobid)
+              with tempfile.TemporaryDirectory() as tmpdir:
+                  try:
+                      # change to temporary directory
+                      os.chdir(tmpdir)
+                      # download files from S3
+                      downloadDirectoryFroms3("${BucketName}", "plugins/")
+                      os.chdir(tmpdir + "/plugins")
+                      print(os.listdir())
+
+                      # zip files
+                      zipf = zipfile.ZipFile('plugins.zip', 'w')
+                      zipdir('.', zipf)
+                      zipf.close()
+                      print(os.listdir())
+
+                      #upload files
+                      s3 = boto3.resource('s3')
+                      s3.meta.client.upload_file('plugins.zip', '${BucketName}', 'plugins.zip')
+
+                      #update environment
+                      #mwaa.update_environment(Name="${MWAAName}")
+
+                      cpl.put_job_success_result(
+                          jobId=jobid
+                          )
+
+                  except:
+                      print("Failed to either create plugin or update MWAA environment")
+                      cpl.put_job_failure_result(
+                          jobId=jobid,
+                          failureDetails={
+                              'type': 'JobFailed',
+                              'message': 'Failed to either create plugin file or update mwaa environment'
+                          }
+                      )
+
+  # CodePipeline resources
+  CodePipelineRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Description: Role for Airflow CodePipeline
+      Path: /service-role/
+      Policies:
+        - PolicyName: cfn-codepipeline-mwaa-role
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:ReEncryptFrom
+                  - kms:ReEncryptTo
+                  - kms:GenerateDataKey
+                  - kms:GenerateDataKeyWithoutPlaintext
+                  - kms:DescribeKey
+                  - kms:RetireGrant
+                  - kms:CreateGrant
+                  - kms:ListAliases
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - appconfig:StartDeployment
+                  - appconfig:StopDeployment
+                  - appconfig:GetDeployment
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - states:DescribeExecution
+                  - states:DescribeStateMachine
+                  - states:StartExecution
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:DescribeImages
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - servicecatalog:ListProvisioningArtifacts
+                  - servicecatalog:CreateProvisioningArtifact
+                  - servicecatalog:DescribeProvisioningArtifact
+                  - servicecatalog:DeleteProvisioningArtifact
+                  - servicecatalog:UpdateProduct
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - devicefarm:ListProjects
+                  - devicefarm:ListDevicePools
+                  - devicefarm:GetRun
+                  - devicefarm:GetUpload
+                  - devicefarm:CreateUpload
+                  - devicefarm:ScheduleRun
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuildBatches
+                  - codebuild:StartBuildBatch
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:UpdateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:SetStackPolicy
+                  - cloudformation:ValidateTemplate
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - opsworks:CreateDeployment
+                  - opsworks:DescribeApps
+                  - opsworks:DescribeCommands
+                  - opsworks:DescribeDeployments
+                  - opsworks:DescribeInstances
+                  - opsworks:DescribeStacks
+                  - opsworks:UpdateApp
+                  - opsworks:UpdateStack
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                  - lambda:ListFunctions
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - elasticbeanstalk:*
+                  - ec2:*
+                  - elasticloadbalancing:*
+                  - autoscaling:*
+                  - cloudwatch:*
+                  - s3:*
+                  - sns:*
+                  - cloudformation:*
+                  - rds:*
+                  - sqs:*
+                  - ecs:*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - codedeploy:CreateDeployment
+                  - codedeploy:GetApplication
+                  - codedeploy:GetApplicationRevision
+                  - codedeploy:GetDeployment
+                  - codedeploy:GetDeploymentConfig
+                  - codedeploy:RegisterApplicationRevision
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - codecommit:CancelUploadArchive
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:GetRepository
+                  - codecommit:GetUploadArchiveStatus
+                  - codecommit:UploadArchive
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: "*"
+                Condition:
+                  StringEqualsIfExists:
+                    iam:PassedToService:
+                      - cloudformation.amazonaws.com
+                      - elasticbeanstalk.amazonaws.com
+                      - ec2.amazonaws.com
+                      - ecs-tasks.amazonaws.com
+  AirflowPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Type: S3
+        Location: !Ref BucketName
+      Name: !Ref CodePipelineName
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                BranchName: !Ref BranchName
+                RepositoryName: !Ref RepositoryName
+                PollForSourceChanges: true
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: ReleaseAction
+              InputArtifacts:
+                - Name: SourceOutput
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: S3
+              Configuration:
+                BucketName: !Ref BucketName
+                Extract: 'true'
+              RunOrder: 1
+        - Name: Lambda
+          Actions:
+            - Name: LambdaAction
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Version: 1
+                Provider: Lambda
+              Configuration:
+                FunctionName: !Ref LambdaZipFunction
+              RunOrder: 1
+
+  # SecurityGroup
+  AirflowSG:
+      Type: "AWS::EC2::SecurityGroup"
+      Properties:
+        GroupDescription: Security group for MWAA
+        GroupName: PublicSg4MWAA
+        VpcId: !Ref VPCID
+        SecurityGroupEgress:
+          - IpProtocol: "-1"
+            FromPort: 0
+            ToPort: 65535
+            CidrIp: 0.0.0.0/0
+        SecurityGroupIngress:
+          - IpProtocol: "-1"
+            FromPort: 443
+            ToPort: 443
+            CidrIp: 0.0.0.0/0 # for demonstration purposes
+            Description: mwaa public sg
+        Tags:
+          - Key: Name
+            Value: PublicSg4MWAA

@@ -1,0 +1,68 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: S3 Bucket with Inventory and Analytics Configurations
+Parameters:
+  MWAARoleArn:
+    Type: String
+    Description: The Arn of the MWAA Role
+  S3BucketArn:
+    Type: String
+    Description: The arn of the airflow bucket
+  KMSKeyID:
+    Type: String
+    Description: The key ARN for the KMS master key
+  MWAAName:
+    Type: String
+    Description: Name of the MWAA environment. THIS NEEDS TO BE THE SAME NAME AS IN THE MWAA SETUP TEMPLATE!
+  MWAASG:
+    Type: String
+    Description: The security group id
+  Subnet1:
+    Type: String
+    Description: The first private subnet
+  Subnet2:
+    Type: String
+    Description: The second private subnet
+  MaxWorkers:
+    Type: Number
+    Description: The maximum amount of workers
+  EnvClass:
+    Type: String
+    Description: The environment class depending on the amount of airflow DAGs
+
+Resources:
+    # MWAA Environment
+  MWAAEnv:
+    Type: AWS::MWAA::Environment
+    Properties:
+      DagS3Path: dags
+      EnvironmentClass: !Ref EnvClass # e.g. mw1.small
+      ExecutionRoleArn: !Ref MWAARoleArn
+      KmsKey: !Ref KMSKeyID
+      LoggingConfiguration:
+        DagProcessingLogs:
+          Enabled: true
+          LogLevel: INFO
+        SchedulerLogs:
+          Enabled: true
+          LogLevel: INFO
+        TaskLogs:
+          Enabled: true
+          LogLevel: INFO
+        WebserverLogs:
+          Enabled: true
+          LogLevel: INFO
+        WorkerLogs:
+          Enabled: true
+          LogLevel: INFO
+      MaxWorkers: !Ref MaxWorkers # e.g. 3
+      Name: !Ref MWAAName
+      NetworkConfiguration:
+        SecurityGroupIds:
+          - !Ref MWAASG
+        SubnetIds:
+          - !Ref Subnet1
+          - !Ref Subnet2
+      PluginsS3Path: plugins.zip
+      RequirementsS3Path: requirements.txt
+      SourceBucketArn: !Ref S3BucketArn
+      WebserverAccessMode: PUBLIC_ONLY # PRIVATE_ONLY
