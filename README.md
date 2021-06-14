@@ -11,7 +11,7 @@ Firstly, we needed to create all necessary resources for the MWAA environment. A
 - IAM roles for MWAA, CodePipeline and Lambda
 - A security group for the MWAA resources
 
-The corresponding (abstracted) CloudFormation template is named _step_1_cfn_mwaa_base_resources.yaml_.
+The corresponding (abstracted) CloudFormation template is named [_step_1_cfn_mwaa_base_resources.yaml_](https://github.com/tomasEprimo/mwaa_eprimo/blob/main/step_1_cfn_mwaa_base_resources.yaml).
 
 #### Step 2 - Adjust the kms key policy
 Disks of MWAA resources were supposed to be encrypted at-rest with KMS-CMK. This KMS key had to be identical to the key that is used to encrypt data stored in the S3 Bucket mentioned in step 1 to allow encrypted CloudWatch logs. To achieve this, the KMS key policy had to be changed accordingly
@@ -44,4 +44,4 @@ The dummy-values *AWS-REGION* and *ACCOUNT-ID* serve as placeholder for the actu
 Finally, we created the MWAA environment with the Apache Airflow version 1.16. The creation of the resources took about 20 minutes.
 The resource section of the CloudFormation stack that creates the actual MWAA environment is shown in beginning of the following paragraph
 
-The corresponding (abstracted) CloudFormation template is named _step_3_cfn_mwaa_only.yaml_.
+The corresponding (abstracted) CloudFormation template is named [_step_3_cfn_mwaa_only.yaml_](https://github.com/tomasEprimo/mwaa_eprimo/blob/main/step_3_cfn_mwaa_environment.yaml).
